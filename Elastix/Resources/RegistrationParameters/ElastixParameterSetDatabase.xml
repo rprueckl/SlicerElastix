@@ -1,5 +1,52 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ElastixParameterSetDatabase>
+  <ParameterSet id="cx-rigid"
+    modality="generic rigid"
+    content="all"
+    description="rigid registration in cortexplorer"
+    publications="">
+    <ParameterFiles>
+      <File Name="CxParameters_Rigid.txt" />
+    </ParameterFiles>
+  </ParameterSet>
+  <ParameterSet id="cx-similarity"
+    modality="generic similarity"
+    content="all"
+    description="similarity registration in cortexplorer"
+    publications="">
+    <ParameterFiles>
+      <File Name="CxParameters_Similarity.txt" />
+    </ParameterFiles>
+  </ParameterSet>
+  <ParameterSet id="cx-affine"
+    modality="generic affine"
+    content="all"
+    description="affine registration in cortexplorer"
+    publications="">
+    <ParameterFiles>
+      <File Name="CxParameters_Affine.txt" />
+    </ParameterFiles>
+  </ParameterSet>
+  <ParameterSet id="cx-bspline-similarity"
+    modality="generic bspline"
+    content="all"
+    description="bspline registration with upstream similarity registration in cortexplorer"
+    publications="">
+    <ParameterFiles>
+      <File Name="CxParameters_Similarity.txt" />
+      <File Name="CxParameters_BSpline.txt" />
+    </ParameterFiles>
+  </ParameterSet>
+  <ParameterSet id="cx-bspline-affine"
+    modality="generic affine"
+    content="all"
+    description="bspline registration with upstream affine registration in cortexplorer"
+    publications="">
+    <ParameterFiles>
+      <File Name="CxParameters_Affine.txt" />
+      <File Name="CxParameters_BSpline.txt" />
+    </ParameterFiles>
+  </ParameterSet>
   <ParameterSet id="default0"
     modality="generic"
     content="all"

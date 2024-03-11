@@ -7,6 +7,7 @@ from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import logging
 import sys
+import time
 
 #
 # Elastix
@@ -84,7 +85,7 @@ class ElastixWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     for preset in self.logic.getRegistrationPresets():
       self.ui.registrationPresetSelector.addItem(
-        f"{preset[RegistrationPresets_Modality]} ({preset[RegistrationPresets_Content]})"
+        "%s (%s)" % (preset[RegistrationPresets_Modality], preset[RegistrationPresets_Content])
       )
 
     self.ui.customElastixBinDirSelector.settingKey = self.logic.customElastixBinDirSettingsKey
@@ -229,25 +230,28 @@ class ElastixWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
       self.logic.cancelRequested = True
       self.registrationInProgress = False
     else:
-      with slicer.util.tryWithErrorDisplay("Failed to compute results.", waitCursor=True):
-        self.ui.statusLabel.plainText = ''
-        try:
-          self.registrationInProgress = True
-          self.updateApplyButtonState()
+      self.ui.statusLabel.plainText = ''
+      try:
+        self.registrationInProgress = True
+        self.updateApplyButtonState()
 
-          self.logic.setCustomElastixBinDir(self.ui.customElastixBinDirSelector.currentPath)
-          self.logic.deleteTemporaryFiles = not self.ui.keepTemporaryFilesCheckBox.checked
-          self.logic.logStandardOutput = self.ui.showDetailedLogDuringExecutionCheckBox.checked
-          self.logic.registerVolumesUsingParameterNode(self._parameterNode)
+        self.logic.setCustomElastixBinDir(self.ui.customElastixBinDirSelector.currentPath)
+        self.logic.deleteTemporaryFiles = not self.ui.keepTemporaryFilesCheckBox.checked
+        self.logic.logStandardOutput = self.ui.showDetailedLogDuringExecutionCheckBox.checked
+        self.logic.registerVolumesUsingParameterNode(self._parameterNode)
 
-          # Apply computed transform to moving volume if output transform is computed to immediately see registration results
-          movingVolumeNode = self.ui.movingVolumeSelector.currentNode()
-          if self.ui.outputTransformSelector.currentNode() is not None \
-            and movingVolumeNode is not None \
-            and self.ui.outputVolumeSelector.currentNode() is None:
-            movingVolumeNode.SetAndObserveTransformNodeID(self.ui.outputTransformSelector.currentNode().GetID())
-        finally:
-          self.registrationInProgress = False
+        # Apply computed transform to moving volume if output transform is computed to immediately see registration results
+        movingVolumeNode = self.ui.movingVolumeSelector.currentNode()
+        if self.ui.outputTransformSelector.currentNode() is not None \
+          and movingVolumeNode is not None \
+          and self.ui.outputVolumeSelector.currentNode() is None:
+          movingVolumeNode.SetAndObserveTransformNodeID(self.ui.outputTransformSelector.currentNode().GetID())
+      except Exception as error:
+        slicer.util.errorDisplay("Failed to compute results")
+        print(str(error))
+        self.addLog(str(error))
+      finally:
+        self.registrationInProgress = False
     self.updateApplyButtonState()
 
   def updateApplyButtonState(self):
@@ -323,6 +327,10 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
 
     self.logCallback = None
     self.isRunning = False
+    self.successful = False
+    self.asynchronousMode = False
+    self.tempDir = ''
+    self.outputTransformPath = ''
     self.cancelRequested = False
     self.deleteTemporaryFiles = True
     self.logStandardOutput = False
@@ -349,7 +357,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
 
   def addLog(self, text):
     logging.info(text)
-    if self.logCallback:
+    if not self.asynchronousMode and self.logCallback:
       self.logCallback(text)
 
   def getElastixBinDir(self):
@@ -365,11 +373,11 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       os.path.join(self.scriptPath, '..'),
       os.path.join(self.scriptPath, '../../../bin'),
       # build tree
-      os.path.join(self.scriptPath, '../../../../bin'),
-      os.path.join(self.scriptPath, '../../../../bin/Release'),
-      os.path.join(self.scriptPath, '../../../../bin/Debug'),
-      os.path.join(self.scriptPath, '../../../../bin/RelWithDebInfo'),
-      os.path.join(self.scriptPath, '../../../../bin/MinSizeRel') ]
+      os.path.join(self.scriptPath, '../../../bin'),
+      os.path.join(self.scriptPath, '../../../bin/Release'),
+      os.path.join(self.scriptPath, '../../../bin/Debug'),
+      os.path.join(self.scriptPath, '../../../bin/RelWithDebInfo'),
+      os.path.join(self.scriptPath, '../../../bin/MinSizeRel') ]
 
     for elastixBinDirCandidate in elastixBinDirCandidates:
       if os.path.isfile(os.path.join(elastixBinDirCandidate, self.elastixFilename)):
@@ -394,16 +402,8 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     self.getElastixBinDir()
 
   def getElastixEnv(self):
-    """Create an environment for elastix where executables are added to the path"""
-    elastixBinDir = self.getElastixBinDir()
     elastixEnv = os.environ.copy()
-    elastixEnv["PATH"] = os.path.join(elastixBinDir, elastixEnv["PATH"]) if elastixEnv.get("PATH") else elastixBinDir
-
-    import platform
-    if platform.system() != 'Windows':
-      elastixLibDir = os.path.abspath(os.path.join(elastixBinDir, '../lib'))
-      elastixEnv["LD_LIBRARY_PATH"] = os.path.join(elastixLibDir, elastixEnv["LD_LIBRARY_PATH"]) if elastixEnv.get("LD_LIBRARY_PATH") else elastixLibDir
-
+    elastixEnv.pop("ITK_AUTOLOAD_PATH")
     return elastixEnv
 
   def getRegistrationPresets(self):
@@ -433,7 +433,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     for presetIndex, preset in enumerate(self.getRegistrationPresets()):
       if preset[RegistrationPresets_Id] == presetId:
         return presetIndex
-    message = f"Registration preset with id '{presetId}' could not be found.  Falling back to default preset."
+    message = "Registration preset with id '%s' could not be found.  Falling back to default preset." % (presetId)
     logging.warning(message)
     self.addLog(message)
     return 0
@@ -441,13 +441,13 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
   def startElastix(self, cmdLineArguments):
     self.addLog("Register volumes...")
     executableFilePath = os.path.join(self.getElastixBinDir(), self.elastixFilename)
-    logging.info(f"Register volumes using: {executableFilePath}: {cmdLineArguments!r}")
+    logging.info("Register volumes using: %s: %s" % (executableFilePath, ' '.join(cmdLineArguments)))
     return self._createSubProcess(executableFilePath, cmdLineArguments)
 
   def startTransformix(self, cmdLineArguments):
     self.addLog("Generate output...")
     executableFilePath = os.path.join(self.getElastixBinDir(), self.transformixFilename)
-    logging.info(f"Generate output using: {executableFilePath}: {cmdLineArguments!r}")
+    logging.info("Generate output using: %s: %s" % (executableFilePath, ' '.join(cmdLineArguments)))
     return self._createSubProcess(executableFilePath, cmdLineArguments)
 
   def _createSubProcess(self, executableFilePath, cmdLineArguments):
@@ -471,6 +471,8 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     # save process output (if not logged) so that it can be displayed in case of an error
     processOutput = ''
     import subprocess
+    
+    last_file_check_time = time.time()
 
     while True:
       try:
@@ -486,8 +488,18 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
         # Probably system locale is set to non-English, we cannot easily capture process output.
         # Code page conversion happens because `universal_newlines=True` sets process output to text mode.
         pass
-      slicer.app.processEvents()  # give a chance to click Cancel button
+      if not self.asynchronousMode:
+        slicer.app.processEvents()  # give a chance to click Cancel button
+      
+      current_time = time.time()
+      if current_time - last_file_check_time > 1:
+        cancel_file_path = os.path.join(self.tempDir, "cancel")
+        if os.path.exists(cancel_file_path):
+          self.cancelRequested = True
+        last_file_check_time = current_time
+          
       if self.cancelRequested:
+        self.addLog("!!! stop request !!!")
         process.kill()
         break
 
@@ -526,25 +538,29 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       forceDisplacementFieldOutputTransform=slicer.util.toBool(parameterNode.GetParameter(self.FORCE_GRID_TRANSFORM_PARAM)),
       initialTransformNode=parameterNode.GetNodeReference(self.INITIAL_TRANSFORM_REF))
 
+  def createTempDirExternal(self):
+    self.tempDir = self.createTempDirectory()
+
   def registerVolumes(self, fixedVolumeNode, movingVolumeNode, parameterFilenames=None, outputVolumeNode=None,
                       outputTransformNode=None, fixedVolumeMaskNode=None, movingVolumeMaskNode=None,
                       forceDisplacementFieldOutputTransform=True, initialTransformNode=None):
 
     self.isRunning = True
+    self.successful = False
     try:
       if parameterFilenames is None:
-        self.addLog(f"Using default registration preset with id '{self.DEFAULT_PRESET_ID}'")
+        self.addLog("Using default registration preset with id '%s'" % (self.DEFAULT_PRESET_ID))
         defaultPresetIndex = self.getRegistrationIndexByPresetId(self.DEFAULT_PRESET_ID)
         parameterFilenames = self.getRegistrationPresets()[defaultPresetIndex][RegistrationPresets_ParameterFilenames]
 
       self.cancelRequested = False
 
-      tempDir = self.createTempDirectory()
-      self.addLog(f'Volume registration is started in working directory: {tempDir}')
+      #self.tempDir = self.createTempDirectory()
+      self.addLog("Volume registration is started in working directory: %s" % (self.tempDir))
 
       # Specify (and create) input/output locations
-      inputDir = self.createDirectory(os.path.join(tempDir, self.INPUT_DIR_NAME))
-      resultTransformDir = self.createDirectory(os.path.join(tempDir, self.OUTPUT_TRANSFORM_DIR_NAME))
+      inputDir = self.createDirectory(os.path.join(self.tempDir, self.INPUT_DIR_NAME))
+      resultTransformDir = self.createDirectory(os.path.join(self.tempDir, self.OUTPUT_TRANSFORM_DIR_NAME))
 
       # compose parameters for running Elastix
       inputParamsElastix = self._addInputVolumes(inputDir, [
@@ -566,16 +582,25 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       if self.cancelRequested:
         self.addLog("User requested cancel.")
       else:
-        self._processElastixOutput(tempDir, parameterFilenames, fixedVolumeNode, movingVolumeNode,
-                                   outputVolumeNode, outputTransformNode, forceDisplacementFieldOutputTransform)
+        if not self.asynchronousMode:
+          self._processElastixOutput(self.tempDir, parameterFilenames, fixedVolumeNode, movingVolumeNode, outputVolumeNode, outputTransformNode, forceDisplacementFieldOutputTransform)
+        
+        self.outputTransformPath = os.path.join(resultTransformDir, "TransformParameters.1-Composite.tfm")
+        if os.path.exists(self.outputTransformPath):
+          self.successful = True
+        else:
+          self.outputTransformPath = os.path.join(resultTransformDir, "TransformParameters.0-Composite.tfm")
+          if os.path.exists(self.outputTransformPath):
+            self.successful = True
+        
         self.addLog("Registration is completed")
 
     finally: # Clean up
-      if self.deleteTemporaryFiles:
+      if self.deleteTemporaryFiles and not self.asynchronousMode:
         import shutil
-        shutil.rmtree(tempDir)
+        shutil.rmtree(self.tempDir)
+        self.tempDir = '';
       self.isRunning = False
-      self.cancelRequested = False
 
   def _processElastixOutput(self, tempDir, parameterFilenames, fixedVolumeNode, movingVolumeNode, outputVolumeNode,
                             outputTransformNode, forceDisplacementFieldOutputTransform):
@@ -588,7 +613,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     if outputTransformNode is not None and not forceDisplacementFieldOutputTransform:
       # NB: if return value is False, Could not load transform (probably not linear and bspline)
       try:
-        self.loadTransformFromFile(f"{transformFileNameBase}-Composite.h5", outputTransformNode)
+        self.loadTransformFromFile("%s-Composite.h5" % (transformFileNameBase), outputTransformNode)
         elastixTransformFileImported = True
       except:
         elastixTransformFileImported = False
@@ -597,7 +622,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     # Run Transformix to get resampled moving volume or transformation as a displacement field
     if outputVolumeNode is not None or not elastixTransformFileImported:
       inputParamsTransformix = [
-        '-tp', f'{transformFileNameBase}.txt',
+        '-tp', '%s.txt' % (transformFileNameBase),
         '-out', resultResampleDir
       ]
       if outputVolumeNode:
@@ -617,9 +642,11 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       outputTransformPath = os.path.join(resultResampleDir, "deformationField.mhd")
       try:
         self.loadTransformFromFile(outputTransformPath, outputTransformNode)
-      except:
-        raise RuntimeError(f"Failed to load output transform from {outputTransformPath}")
-
+      except Exception as error:
+        slicer.util.errorDisplay("Failed to load transform exception")
+        print(str(error))
+        self.addLog(str(error))
+        raise RuntimeError("Failed to load output transform from %s" % (outputTransformPath))
       if slicer.app.majorVersion >= 5 or (slicer.app.majorVersion >= 4 and slicer.app.minorVersion >= 11):
         outputTransformNode.AddNodeReferenceID(
           slicer.vtkMRMLTransformNode.GetMovingNodeReferenceRole(), movingVolumeNode.GetID()
@@ -638,7 +665,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       outputVolumeNode.SetIJKToRASMatrix(ijkToRas)
       slicer.mrmlScene.RemoveNode(loadedOutputVolumeNode)
     except:
-      raise RuntimeError(f"Failed to load output volume from {outputVolumePath}")
+      raise RuntimeError("Failed to load output volume from %s" % (outputVolumePath))
 
   def _addInputVolumes(self, inputDir, inputVolumes):
     params = []
@@ -646,7 +673,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
       if not volumeNode:
         continue
       filePath = os.path.join(inputDir, filename)
-      slicer.util.exportNode(volumeNode, filePath)
+      slicer.util.saveNode(volumeNode, filePath)
       params += [paramName, filePath]
     return params
 
@@ -660,7 +687,7 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
   def _addInitialTransform(self, initialTransformNode, inputDir):
     # Save node
     initialTransformFile = os.path.join(inputDir, 'initialTransform.h5')
-    slicer.util.exportNode(initialTransformNode, initialTransformFile)
+    slicer.util.saveNode(initialTransformNode, initialTransformFile)
     # Compose settings
     initialTransformParameterFile = os.path.join(inputDir, 'initialTransformParameter.txt')
     initialTransformSettings = [
@@ -679,11 +706,12 @@ class ElastixLogic(ScriptedLoadableModuleLogic):
     if qt.QDir().mkpath(path):
       return path
     else:
-      raise RuntimeError(f"Failed to create directory {path}")
+      raise RuntimeError("Failed to create directory %s" % (path))
 
   def loadTransformFromFile(self, fileName, node):
-    tmpNode = slicer.util.loadTransform(fileName)
-    node.CopyContent(tmpNode)
+    slicer.util.loadTransform(fileName)
+    tmpNode = slicer.mrmlScene.GetNodesByName('deformationField').GetItemAsObject(0)
+    node.SetAndObserveTransformFromParent(tmpNode.GetTransformFromParent())
     slicer.mrmlScene.RemoveNode(tmpNode)
 
 
@@ -716,13 +744,13 @@ class ElastixTest(ScriptedLoadableModuleTest):
     self.test_Elastix_ParameterNode()
 
   def test_Elastix_Default_Registration_Preset(self):
-    self.delayDisplay(f"Running test: test_Elastix_Default_Registration_Preset", msec=500)
+    self.delayDisplay("Running test: test_Elastix_Default_Registration_Preset", msec=500)
     logic = ElastixLogic()
     logic.registerVolumes(fixedVolumeNode=self.tumor1, movingVolumeNode=self.tumor2, outputVolumeNode=self.outputVolume)
     self.delayDisplay('Test passed!')
 
   def test_Elastix_Explicit_Arguments(self):
-    self.delayDisplay(f"Running test: test_Elastix_Explicit_Arguments", msec=500)
+    self.delayDisplay("Running test: test_Elastix_Explicit_Arguments", msec=500)
 
     logic = ElastixLogic()
     parameterFilenames = logic.getRegistrationPresets()[0][RegistrationPresets_ParameterFilenames]
@@ -732,7 +760,7 @@ class ElastixTest(ScriptedLoadableModuleTest):
     self.delayDisplay('Test passed!')
 
   def test_Elastix_ParameterNode(self):
-    self.delayDisplay(f"Running test: test_Elastix_ParameterNode", msec=500)
+    self.delayDisplay("Running test: test_Elastix_ParameterNode", msec=500)
 
     logic = ElastixLogic()
 
